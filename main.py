@@ -13,9 +13,7 @@ i2c1 = I2C(1, scl=Pin(19), sda=Pin(18), freq=400000)
 lcd2 = pico_i2c_lcd.I2cLcd(i2c1, 0x27, 2, 16)
 
 URL = "http://wttr.in/Ulceby?format=j1"
-
-# Adjust for timezone (UK: 0 in winter, 1 in summer BST)
-TZ_OFFSET = 0
+TZ_OFFSET = 0   # adjust for timezone
 
 def localtime():
     return time.localtime(time.time() + TZ_OFFSET*3600)
@@ -52,22 +50,12 @@ def show_average(d):
         for k in keywords:
             if k in c:
                 counts[k] += 1
-    avg = str(max(counts, key=counts.get) if any(counts.values()) else "mixed")
+    avg = max(counts, key=counts.get) if any(counts.values()) else "mixed"
+    avg_str = str(avg)
+    avg_str = avg_str[0].upper() + avg_str[1:] if len(avg_str) > 1 else avg_str.upper()
     lcd1.clear()
     lcd_print(lcd1, 0, "Average Weather")
-    lcd_print(lcd1, 1, avg.capitalize())
-
-def animate_message(msg, lcdA, lcdB):
-    dots = 0
-    while True:
-        text = msg + "." * (dots % 4)
-        lcdA.clear()
-        lcdB.clear()
-        lcd_print(lcdA, 0, text)
-        lcd_print(lcdB, 0, text)
-        dots += 1
-        yield
-        time.sleep(0.2)
+    lcd_print(lcd1, 1, avg_str)
 
 def fetch_with_timeout(url, timeout=10):
     start = time.time()
@@ -79,7 +67,7 @@ def fetch_with_timeout(url, timeout=10):
                 raise OSError("Request timed out")
             time.sleep(1)
 
-# Connecting animation
+# --- Wi-Fi connect ---
 lcd1.clear(); lcd_print(lcd1, 0, "Connecting to"); lcd_print(lcd1, 1, "server...")
 lcd2.clear(); lcd_print(lcd2, 0, "Connecting to"); lcd_print(lcd2, 1, "server...")
 
@@ -87,11 +75,10 @@ wlan = network.WLAN(network.STA_IF)
 wlan.active(True)
 wlan.connect(ssid, password)
 
-anim = animate_message("Connecting", lcd1, lcd2)
 timeout = 20
 start = time.time()
 while not wlan.isconnected() and time.time() - start < timeout:
-    next(anim)
+    time.sleep(0.5)
 
 if not wlan.isconnected():
     lcd1.clear(); lcd_print(lcd1, 0, "Wi-Fi Error"); lcd_print(lcd1, 1, "Check SSID/PW")
@@ -105,40 +92,41 @@ time.sleep(3)
 
 ntptime.settime()
 
+# --- Timers ---
+last_clock_update = 0
 last_weather_update = 0
-weather_interval = 60
+last_page_update = 0
+weather_interval = 60   # refresh data every 60s
+page_interval = 10      # change page every 10s
 page = 0
 data = None
 
 while True:
-    # Always update clock
-    now = localtime()
-    date_str = "{:02d}/{:02d}/{:04d}".format(now[2], now[1], now[0])
-    time_str = "{:02d}:{:02d}".format(now[3], now[4])
-    lcd2.clear()
-    lcd_print(lcd2, 0, date_str)
-    lcd_print(lcd2, 1, time_str)
+    now = time.time()
 
-    # Weather fetch only when interval passes
-    if time.time() - last_weather_update > weather_interval or data is None:
+    # Update clock every second
+    if now - last_clock_update >= 1:
+        t = localtime()
+        date_str = "{:02d}/{:02d}/{:04d}".format(t[2], t[1], t[0])
+        time_str = "{:02d}:{:02d}".format(t[3], t[4])
+        lcd2.clear()
+        lcd_print(lcd2, 0, date_str)
+        lcd_print(lcd2, 1, time_str)
+        last_clock_update = now
+
+    # Fetch weather every 60s
+    if now - last_weather_update >= weather_interval or data is None:
         try:
-            anim = animate_message("Loading", lcd1, lcd2)
-            response = None
-            while response is None:
-                try:
-                    next(anim)
-                    response = fetch_with_timeout(URL, timeout=10)
-                except Exception:
-                    pass
+            response = fetch_with_timeout(URL, timeout=10)
             data = response.json()
             response.close()
-            last_weather_update = time.time()
+            last_weather_update = now
         except Exception:
             lcd1.clear()
             lcd_print(lcd1, 0, "Error")
 
-    # Cycle weather pages if we have data
-    if data:
+    # Change weather page every 10s
+    if data and now - last_page_update >= page_interval:
         if page == 0:
             show_today(data)
         elif page == 1:
@@ -148,7 +136,6 @@ while True:
         elif page == 3:
             show_average(data)
         page = (page + 1) % 4
-        time.sleep(10)
+        last_page_update = now
 
-    ms = time.ticks_ms()
-    time.sleep_ms(1000 - (ms % 1000))
+    time.sleep_ms(200)  # small pause to avoid busy loop
